@@ -4,6 +4,7 @@ import TaskList from './TaskList';
 import AddTaskForm from './AddTaskForm';
 import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
 import { DEFAULT_FILTER_SETTINGS } from '../constants';
+import ChartsDisplay from './ChartsDisplay'; // Ensured relative path
 
 
 interface TaskCategoryDisplayProps {
@@ -18,6 +19,7 @@ interface TaskCategoryDisplayProps {
   onReorderTasksForTab: (tabId: TabId, parentListId: string | null, draggedTaskId: string, newIndex: number) => void;
   onAddSubTask: (parentId: string, taskText: string) => void; 
   onToggleTaskExpansion: (taskId: string) => void; 
+  onExportToCSV: () => void; // New prop for CSV export
 }
 
 const apiKey = process.env.API_KEY;
@@ -71,47 +73,34 @@ const ProgressBar: React.FC<{ percentage: number; label: string, colorClass?: st
   </div>
 );
 
+// Import TAB_DEFINITIONS from constants for ProgressSummary
+import { TAB_DEFINITIONS as APP_TAB_DEFINITIONS_CONST } from '../constants';
+
 const ProgressSummary: React.FC<{ 
     allTasks: TasksState, 
     onGenerateAnalysis: (progressData: ProgressData) => void, 
     isAnalysisLoading: boolean, 
     analysisResult: string | null, 
-    analysisError: string | null 
-}> = ({ allTasks, onGenerateAnalysis, isAnalysisLoading, analysisResult, analysisError }) => {
+    analysisError: string | null,
+    onExportToCSV: () => void; // Added prop for export
+}> = ({ allTasks, onGenerateAnalysis, isAnalysisLoading, analysisResult, analysisError, onExportToCSV }) => {
     const progressData = useMemo<ProgressData>(() => {
       let overallTotalTasks = 0;
       let overallCompletedTasks = 0;
       const categoryProgress: ProgressData['categories'] = [];
-      const tabDefinitionsForProgress = (Object.values(allTasks) as any)
-      .map((_, idx) => (Object.keys(allTasks) as TabId[])[idx]) // Get tab IDs
-      .map(id => ({ // Create lightweight TabDefinition-like objects
-          id, 
-          label: DEFAULT_FILTER_SETTINGS.status // Placeholder, actual label not strictly needed here
-      }))
-      .filter(tabDef => tabDef.id !== 'completed');
-
-
+      
       for (const tabId of Object.keys(allTasks) as TabId[]) {
-        if (tabId === 'completed') continue;
+        if (tabId === 'completed') continue; 
         const tasksForCategory = allTasks[tabId] || [];
         const { completed, total, incompleteSamples } = countTasksRecursive(tasksForCategory);
         overallTotalTasks += total;
         overallCompletedTasks += completed;
         
-        // Find the label for the current tabId from TAB_DEFINITIONS in constants.ts (or types.ts)
-        // This requires TAB_DEFINITIONS to be accessible here, or pass it as a prop.
-        // For now, let's assume we can get a label. If not, use tabId as title.
-        // This component doesn't have direct access to TAB_DEFINITIONS from constants.ts
-        // A better approach would be to pass labels or full TabDefinition objects if needed.
-        // For simplicity, using tabId as a placeholder if proper label isn't available.
-        // This should be improved if specific labels are critical for the prompt.
-        const tabInfo = DEFAULT_FILTER_SETTINGS; // Placeholder, as TAB_DEFINITIONS is not directly available.
-                                                // Ideally, pass `tabDefinitions` to ProgressSummary.
-        
+        const tabInfo = APP_TAB_DEFINITIONS_CONST.find(t => t.id === tabId);
+
         categoryProgress.push({
           id: tabId,
-          // title: tabInfo?.label || tabId, // Use label if available, otherwise tabId
-          title: tabId, // Simplified for now
+          title: tabInfo?.label || tabId.charAt(0).toUpperCase() + tabId.slice(1), 
           completed: completed,
           total: total,
           percentage: total > 0 ? Math.round((completed / total) * 100) : 0,
@@ -131,7 +120,19 @@ const ProgressSummary: React.FC<{
 
     return (
       <div className="bg-white p-5 sm:p-6 rounded-xl shadow-lg border border-gray-200 mb-6 animate-fadeIn">
-        <h3 className="text-lg sm:text-xl font-semibold text-gray-800 mb-4 text-center">📊 خلاصه پیشرفت پروژه</h3>
+        <div className="flex justify-between items-center mb-4">
+            <h3 className="text-lg sm:text-xl font-semibold text-gray-800">📊 خلاصه پیشرفت پروژه</h3>
+            <button
+                onClick={onExportToCSV}
+                className="flex items-center gap-1.5 bg-green-500 hover:bg-green-600 text-white font-medium py-1.5 px-3.5 rounded-md text-xs transition-colors duration-150 ease-in-out shadow-sm hover:shadow focus:outline-none focus-visible:ring-2 focus-visible:ring-green-500"
+                title="خروجی تمام وظایف به CSV"
+            >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                    <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" />
+                </svg>
+                خروجی CSV
+            </button>
+        </div>
         <div className="mb-5">
           <div className="flex justify-between items-center mb-1 text-sm font-medium text-gray-700">
             <span>پیشرفت کلی</span>
@@ -174,6 +175,7 @@ const ProgressSummary: React.FC<{
     );
 };
 
+
 const TaskCategoryDisplay: React.FC<TaskCategoryDisplayProps> = ({
   tabDefinition,
   tasks, 
@@ -186,6 +188,7 @@ const TaskCategoryDisplay: React.FC<TaskCategoryDisplayProps> = ({
   onReorderTasksForTab,
   onAddSubTask, 
   onToggleTaskExpansion,
+  onExportToCSV,
 }) => {
   const [isLoadingSuggestion, setIsLoadingSuggestion] = useState(false);
   const [suggestionError, setSuggestionError] = useState<string | null>(null);
@@ -210,6 +213,7 @@ const TaskCategoryDisplay: React.FC<TaskCategoryDisplayProps> = ({
       const suggestedTaskTexts: string[] = JSON.parse(jsonStr);
       suggestedTaskTexts.forEach(taskText => { if (taskText?.trim()) onAddTask(taskText.trim()); });
     } catch (error: any) {
+      console.error("Error suggesting tasks:", error);
       setSuggestionError(`خطا در دریافت پیشنهاد: ${error.message || 'لطفاً دوباره تلاش کنید.'}`);
     } finally { setIsLoadingSuggestion(false); }
   };
@@ -220,7 +224,9 @@ const TaskCategoryDisplay: React.FC<TaskCategoryDisplayProps> = ({
     let promptContext = `You are an expert SEO project analyst. Analyze the following project progress for a Persian-speaking audience and provide actionable insights. The project is divided into categories:\n\n`;
     promptContext += `Overall Progress: ${progressData.overall.completed}/${progressData.overall.total} tasks completed (${progressData.overall.percentage}%).\n\n`;
     progressData.categories.forEach(cat => {
-        promptContext += `Category: ${cat.title}\n  - Progress: ${cat.completed}/${cat.total} tasks completed (${cat.percentage}%).\n`;
+        const tabInfo = APP_TAB_DEFINITIONS_CONST.find(t => t.id === cat.id);
+        const categoryTitle = tabInfo?.label || cat.id;
+        promptContext += `Category: ${categoryTitle}\n  - Progress: ${cat.completed}/${cat.total} tasks completed (${cat.percentage}%).\n`;
         if(cat.incompleteTaskSamples.length > 0) promptContext += `  - Some pending tasks: ${cat.incompleteTaskSamples.join(', ')}\n`;
         promptContext += "\n";
     });
@@ -229,46 +235,91 @@ const TaskCategoryDisplay: React.FC<TaskCategoryDisplayProps> = ({
         const response: GenerateContentResponse = await ai.models.generateContent({ model: "gemini-2.5-flash-preview-04-17", contents: promptContext });
         setAnalysisResult(response.text);
     } catch (error: any) {
-        setAnalysisError(`خطا در دریافت تحلیل: ${error.message || 'لطفاً دوباره تلاش کنید.'}`);
+      console.error("Error generating analysis:", error);
+      setAnalysisError(`خطا در دریافت تحلیل: ${error.message || 'لطفاً دوباره تلاش کنید.'}`);
     } finally { setIsAnalysisLoading(false); }
   };
 
   const processedTasks = useMemo(() => {
     let tempTasks = [...tasks]; 
-    if (filterStatus !== 'all') tempTasks = tempTasks.filter(task => filterStatus === 'completed' ? task.completed : !task.completed);
-    if (filterPriority !== 'all') tempTasks = tempTasks.filter(task => filterPriority === 'none' ? !task.priority : task.priority === filterPriority);
-    if (searchTerm.trim() !== '') {
-        const lowercasedSearchTerm = searchTerm.toLowerCase();
-        tempTasks = tempTasks.filter(task => 
-            task.text.toLowerCase().includes(lowercasedSearchTerm) ||
-            (task.notes && task.notes.toLowerCase().includes(lowercasedSearchTerm))
-        );
+    
+    const filterRecursively = (taskList: Task[]): Task[] => {
+        return taskList.map(task => {
+            let matchesSearch = true;
+            if (searchTerm.trim() !== '') {
+                const lowercasedSearchTerm = searchTerm.toLowerCase();
+                matchesSearch = task.text.toLowerCase().includes(lowercasedSearchTerm) ||
+                                (task.notes && task.notes.toLowerCase().includes(lowercasedSearchTerm));
+            }
+
+            let filteredSubTasks = task.subTasks ? filterRecursively(task.subTasks) : [];
+            
+            if (searchTerm.trim() !== '' && !matchesSearch && filteredSubTasks.length === 0) {
+                return null;
+            }
+
+            let matchesStatus = true;
+            if (filterStatus !== 'all') {
+                matchesStatus = filterStatus === 'completed' ? task.completed : !task.completed;
+            }
+
+            let matchesPriority = true;
+            if (filterPriority !== 'all') {
+                matchesPriority = filterPriority === 'none' ? !task.priority : task.priority === filterPriority;
+            }
+
+            if ( (matchesSearch && matchesStatus && matchesPriority) || (searchTerm.trim() !== '' && filteredSubTasks.length > 0) ) {
+                 return {...task, subTasks: filteredSubTasks };
+            }
+            if ( (filterStatus !== 'all' && !matchesStatus) || (filterPriority !== 'all' && !matchesPriority) ) {
+                if (searchTerm.trim() === '' || (searchTerm.trim() !== '' && filteredSubTasks.length === 0)) {
+                    return null;
+                }
+            }
+            return {...task, subTasks: filteredSubTasks }; 
+
+        }).filter(task => task !== null) as Task[];
+    };
+
+    if (filterStatus !== 'all' || filterPriority !== 'all' || searchTerm.trim() !== '') {
+        tempTasks = filterRecursively(tempTasks);
     }
+
+
     if (sortBy !== 'default') {
-      tempTasks.sort((a, b) => {
-        let comparison = 0;
-        switch (sortBy) {
-          case 'dueDate':
-            if (!a.dueDate && !b.dueDate) comparison = 0;
-            else if (!a.dueDate) comparison = 1; else if (!b.dueDate) comparison = -1;
-            else comparison = a.dueDate.localeCompare(b.dueDate);
-            break;
-          case 'priority':
-            const priorityOrder: Record<Task['priority'] | 'none', number> = { 'high': 3, 'medium': 2, 'low': 1, 'none': 0 };
-            comparison = priorityOrder[b.priority || 'none'] - priorityOrder[a.priority || 'none']; 
-            break;
-          case 'text': comparison = a.text.localeCompare(b.text, 'fa'); break;
-        }
-        if (comparison === 0) {
-             const originalIndexA = tasks.findIndex(t => t.id === a.id);
-             const originalIndexB = tasks.findIndex(t => t.id === b.id);
+      const sortRecursively = (taskList: Task[]): Task[] => {
+        let sortedList = [...taskList];
+        sortedList.sort((a, b) => {
+          let comparison = 0;
+          switch (sortBy) {
+            case 'dueDate':
+              if (!a.dueDate && !b.dueDate) comparison = 0;
+              else if (!a.dueDate) comparison = 1; else if (!b.dueDate) comparison = -1;
+              else comparison = a.dueDate.localeCompare(b.dueDate);
+              break;
+            case 'priority':
+              const priorityOrder: Record<Task['priority'] | 'none', number> = { 'high': 3, 'medium': 2, 'low': 1, 'none': 0 };
+              comparison = priorityOrder[b.priority || 'none'] - priorityOrder[a.priority || 'none']; 
+              break;
+            case 'text': comparison = a.text.localeCompare(b.text, 'fa'); break;
+          }
+          if (comparison === 0 && tasks) { 
+             const originalTasksForTab = allTasks ? allTasks[tabDefinition.id] : []; // Fallback to an empty array if allTasks is undefined
+             const originalIndexA = originalTasksForTab.findIndex(t => t.id === a.id);
+             const originalIndexB = originalTasksForTab.findIndex(t => t.id === b.id);
              comparison = originalIndexA - originalIndexB;
-        }
-        return sortDirection === 'asc' ? comparison : -comparison;
-      });
+          }
+          return sortDirection === 'asc' ? comparison : -comparison;
+        });
+        return sortedList.map(task => ({
+          ...task,
+          subTasks: task.subTasks ? sortRecursively(task.subTasks) : []
+        }));
+      };
+      tempTasks = sortRecursively(tempTasks);
     }
     return tempTasks;
-  }, [tasks, filterStatus, filterPriority, sortBy, sortDirection, searchTerm]);
+  }, [tasks, filterStatus, filterPriority, sortBy, sortDirection, searchTerm, allTasks, tabDefinition.id]);
 
   const handleClearFiltersAndSearch = () => {
     onFilterSettingsChange(DEFAULT_FILTER_SETTINGS);
@@ -278,11 +329,10 @@ const TaskCategoryDisplay: React.FC<TaskCategoryDisplayProps> = ({
 
   const handleTaskReorderForThisTab = (draggedTaskId: string, newIndex: number) => {
     onReorderTasksForTab(tabDefinition.id, null, draggedTaskId, newIndex);
-    // onFilterSettingsChange({ sortBy: 'default' }); // This is now handled in App.tsx reorder handler
   };
 
   const showAiTaskSuggestionButton = tabDefinition.id !== 'completed';
-  const showProgressSummary = tabDefinition.id === 'completed' && allTasks;
+  const showProgressSummaryAndCharts = tabDefinition.id === 'completed' && allTasks;
   const showAddTaskForm = tabDefinition.id !== 'completed';
   const showFilterSortSearchControls = tabDefinition.id !== 'completed';
 
@@ -309,33 +359,40 @@ const TaskCategoryDisplay: React.FC<TaskCategoryDisplayProps> = ({
       )}
       {suggestionError && <p className="mb-3 text-sm text-red-600 bg-red-50 p-2 rounded-md">{suggestionError}</p>}
       
-      {showProgressSummary && allTasks && (
-        <ProgressSummary 
-            allTasks={allTasks} 
-            onGenerateAnalysis={handleGenerateAnalysis}
-            isAnalysisLoading={isAnalysisLoading}
-            analysisResult={analysisResult}
-            analysisError={analysisError}
-        />
+      {showProgressSummaryAndCharts && allTasks && (
+        <>
+            <ProgressSummary 
+                allTasks={allTasks} 
+                onGenerateAnalysis={handleGenerateAnalysis}
+                isAnalysisLoading={isAnalysisLoading}
+                analysisResult={analysisResult}
+                analysisError={analysisError}
+                onExportToCSV={onExportToCSV}
+            />
+            <ChartsDisplay tasksState={allTasks} />
+        </>
       )}
 
       {showFilterSortSearchControls && (
         <div className="my-5 p-4 bg-slate-50 border border-slate-200 rounded-lg shadow space-y-4">
           <div>
-            <label htmlFor={`search-tasks-${tabDefinition.id}`} className="block text-xs font-medium text-slate-600 mb-1">جستجوی وظایف اصلی:</label>
+            <label htmlFor={`search-tasks-${tabDefinition.id}`} className="block text-xs font-medium text-slate-600 mb-1">جستجوی وظایف (شامل زیرمجموعه‌ها):</label>
             <div className="relative">
-              <input type="search" id={`search-tasks-${tabDefinition.id}`} value={searchTerm} onChange={(e) => onFilterSettingsChange({ searchTerm: e.target.value })} placeholder="جستجو در متن و یادداشت‌های وظایف اصلی..." className="w-full p-2.5 pr-8 border border-slate-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 text-sm bg-white" />
+              <input type="search" id={`search-tasks-${tabDefinition.id}`} value={searchTerm} onChange={(e) => onFilterSettingsChange({ searchTerm: e.target.value })} placeholder="جستجو در متن و یادداشت‌های وظایف و زیرمجموعه‌ها..." className="w-full p-2.5 pr-8 border border-slate-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 text-sm bg-white" />
               {searchTerm && (<button onClick={handleClearSearch} className="absolute left-2 top-1/2 -translate-y-1/2 p-1 text-slate-500 hover:text-slate-700" aria-label="پاک کردن جستجو" title="پاک کردن جستجو"> <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"> <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /> </svg> </button> )}
             </div>
           </div>
           <div>
-            <h4 className="text-sm font-semibold text-slate-700 mb-3 sr-only">فیلتر و مرتب‌سازی وظایف اصلی:</h4>
+            <h4 className="text-sm font-semibold text-slate-700 mb-3 sr-only">فیلتر و مرتب‌سازی وظایف:</h4>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 items-end">
               <div> <label htmlFor={`filter-status-${tabDefinition.id}`} className="block text-xs font-medium text-slate-600 mb-1">وضعیت:</label> <select id={`filter-status-${tabDefinition.id}`} value={filterStatus} onChange={(e) => onFilterSettingsChange({ status: e.target.value as FilterStatusValue })} className="w-full p-2 border border-slate-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 text-xs bg-white"> {STATUS_FILTER_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)} </select> </div>
               <div> <label htmlFor={`filter-priority-${tabDefinition.id}`} className="block text-xs font-medium text-slate-600 mb-1">اولویت:</label> <select id={`filter-priority-${tabDefinition.id}`} value={filterPriority} onChange={(e) => onFilterSettingsChange({ priority: e.target.value as FilterPriorityValue })} className="w-full p-2 border border-slate-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 text-xs bg-white"> {PRIORITY_FILTER_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)} </select> </div>
               <div className="flex items-end gap-2"> <div className="flex-grow"> <label htmlFor={`sort-by-${tabDefinition.id}`} className="block text-xs font-medium text-slate-600 mb-1">مرتب‌سازی:</label> <select id={`sort-by-${tabDefinition.id}`} value={sortBy} onChange={(e) => onFilterSettingsChange({ sortBy: e.target.value as SortByValue })} className="w-full p-2 border border-slate-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 text-xs bg-white"> {SORT_BY_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)} </select> </div> <button onClick={() => onFilterSettingsChange({ sortDirection: sortDirection === 'asc' ? 'desc' : 'asc' })} className="p-2 border border-slate-300 rounded-md shadow-sm hover:bg-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 text-slate-600" aria-label={sortDirection === 'asc' ? "مرتب‌سازی نزولی" : "مرتب‌سازی صعودی"} title={sortDirection === 'asc' ? "مرتب‌سازی نزولی" : "مرتب‌سازی صعودی"}> {sortDirection === 'asc' ? ( <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M14.707 10.293a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 111.414-1.414L9 12.586V5a1 1 0 012 0v7.586l2.293-2.293a1 1 0 011.414 0z" clipRule="evenodd" /></svg> ) : ( <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M5.293 9.707a1 1 0 010-1.414l4-4a1 1 0 011.414 0l4 4a1 1 0 01-1.414 1.414L11 7.414V15a1 1 0 11-2 0V7.414L6.707 9.707a1 1 0 01-1.414 0z" clipRule="evenodd" /></svg> )} </button> </div>
               <button onClick={handleClearFiltersAndSearch} className="w-full sm:w-auto lg:col-start-4 p-2 border border-slate-300 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-md shadow-sm text-xs font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"> پاک کردن همه </button>
             </div>
+            <p className="text-xs text-gray-500 mt-2">
+                توجه: فیلترها و جستجو بر روی وظایف و زیرمجموعه‌های آن‌ها اعمال می‌شوند. مرتب‌سازی بر روی ساختار درختی اعمال می‌شود.
+            </p>
           </div>
         </div>
       )}

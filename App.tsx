@@ -53,6 +53,7 @@ const validateAndInitializeTasksRecursive = (taskArray: Task[] | undefined): Tas
     dueDate: task.dueDate,
     priority: task.priority,
     notes: task.notes,
+    completedAt: task.completedAt,
   })).filter(
     (task: any): task is Task =>
         typeof task === 'object' &&
@@ -65,29 +66,32 @@ const validateAndInitializeTasksRecursive = (taskArray: Task[] | undefined): Tas
 
 const processTasksForTemplateStorageRecursive = (tasks: Task[]): Task[] => {
   return tasks.map(task => {
-    const processedTask = { ...task, completed: false, dueDate: undefined, notes: undefined };
-    if (processedTask.dueDate === undefined) delete processedTask.dueDate;
-    if (processedTask.notes === undefined) delete processedTask.notes;
-    processedTask.subTasks = task.subTasks ? processTasksForTemplateStorageRecursive(task.subTasks) : [];
-    return processedTask;
+    const processedTask: Partial<Task> = { ...task, completed: false, dueDate: undefined, notes: undefined, completedAt: undefined };
+    delete processedTask.dueDate;
+    delete processedTask.notes;
+    delete processedTask.completedAt;
+    (processedTask as Task).subTasks = task.subTasks ? processTasksForTemplateStorageRecursive(task.subTasks) : [];
+    return processedTask as Task;
   });
 };
 
 const processTasksFromTemplateForProjectRecursive = (tasks: Task[], newParentId?: string): Task[] => {
   return tasks.map(task => {
     const newId = generateId();
-    const processedTask = {
+    const processedTask: Partial<Task> = {
       ...task,
       id: newId,
       parentId: newParentId,
       completed: false,
       dueDate: undefined,
       notes: undefined,
+      completedAt: undefined,
     };
-    if (processedTask.dueDate === undefined) delete processedTask.dueDate;
-    if (processedTask.notes === undefined) delete processedTask.notes;
-    processedTask.subTasks = task.subTasks ? processTasksFromTemplateForProjectRecursive(task.subTasks, newId) : [];
-    return processedTask;
+    delete processedTask.dueDate;
+    delete processedTask.notes;
+    delete processedTask.completedAt;
+    (processedTask as Task).subTasks = task.subTasks ? processTasksFromTemplateForProjectRecursive(task.subTasks, newId) : [];
+    return processedTask as Task;
   });
 };
 
@@ -161,23 +165,21 @@ const App: React.FC = () => {
         for (const key in parsedSettings) {
           if (Object.prototype.hasOwnProperty.call(parsedSettings, key)) {
             const tabId = key as TabId;
-            if (tabId in baseSettings) { // Check if it's a valid TabId
+            if (tabId in baseSettings) { 
               if (tabId !== 'completed' && parsedSettings[tabId]) {
-                mergedSettings[tabId] = parsedSettings[tabId]!;
+                mergedSettings[tabId] = { ...DEFAULT_FILTER_SETTINGS, ...parsedSettings[tabId]!};
               } else if (tabId === 'completed') {
-                mergedSettings[tabId] = undefined; // Ensure 'completed' tab filters are undefined
+                mergedSettings[tabId] = undefined; 
               }
-              // If tabId is not 'completed' but parsedSettings[tabId] is falsy (e.g. null/undefined from bad save)
-              // it will retain the DEFAULT_FILTER_SETTINGS from baseSettings.
             }
           }
         }
         return mergedSettings;
       }
-      return baseSettings; // No saved settings, return base
+      return baseSettings; 
     } catch (e) {
       console.error("Error reading or parsing per-tab filter settings from localStorage:", e);
-      return baseSettings; // Fallback on error
+      return baseSettings; 
     }
   });
 
@@ -210,9 +212,9 @@ const App: React.FC = () => {
   const handleAddTask = useCallback((tabId: TabId, taskText: string) => {
     setTasks(prevTasks => {
       const currentTasksForTab = prevTasks[tabId] || [];
-      const isDuplicate = currentTasksForTab.some(task => task.text === taskText);
+      const isDuplicate = currentTasksForTab.some(task => task.text === taskText && !task.parentId); // Check only top-level
       if (isDuplicate) {
-        alert(`وظیفه "${taskText}" از قبل در دسته "${APP_TAB_DEFINITIONS.find(t=>t.id===tabId)?.label}" وجود دارد.`);
+        alert(`وظیفه "${taskText}" از قبل در این سطح در دسته "${APP_TAB_DEFINITIONS.find(t=>t.id===tabId)?.label}" وجود دارد.`);
         return prevTasks;
       }
       const newTask: Task = { id: generateId(), text: taskText, completed: false, subTasks: [], isExpanded: false };
@@ -228,21 +230,48 @@ const App: React.FC = () => {
           const parentSubTasks = task.subTasks || [];
           if (parentSubTasks.some(sub => sub.text === taskText)) {
             alert(`زیرمجموعه "${taskText}" از قبل برای این وظیفه وجود دارد.`);
-            return task;
+            return task; // Return original task to prevent adding duplicate
           }
           return { ...task, subTasks: [...parentSubTasks, newSubTask], isExpanded: true };
         }
         return task;
       };
-      return { ...prevTasks, [tabId]: mapTasksRecursive(prevTasks[tabId] || [], updateParent) };
+      
+      let alertShown = false; // To prevent multiple alerts from recursive calls
+      const tasksInTab = prevTasks[tabId] || [];
+      const modifiedTasks = mapTasksRecursive(tasksInTab, (task) => {
+        if (task.id === parentId) {
+            const parentSubTasks = task.subTasks || [];
+            if (parentSubTasks.some(sub => sub.text === taskText)) {
+                if (!alertShown) {
+                    alert(`زیرمجموعه "${taskText}" از قبل برای این وظیفه وجود دارد.`);
+                    alertShown = true;
+                }
+                return task; // Return original task, no update
+            }
+            return { ...task, subTasks: [...parentSubTasks, newSubTask], isExpanded: true };
+        }
+        return task;
+      });
+
+      if (alertShown) return prevTasks; // If duplicate found and alerted, don't update state
+
+      return { ...prevTasks, [tabId]: modifiedTasks };
     });
   }, []);
 
   const handleToggleTask = useCallback((tabId: TabId, taskId: string) => {
-    setTasks(prevTasks => ({
-      ...prevTasks,
-      [tabId]: mapTasksRecursive(prevTasks[tabId] || [], task => task.id === taskId ? { ...task, completed: !task.completed } : task)
-    }));
+    setTasks(prevTasks => {
+      const newTimestamp = new Date().toISOString();
+      return {
+        ...prevTasks,
+        [tabId]: mapTasksRecursive(prevTasks[tabId] || [], task => 
+          task.id === taskId 
+            ? { ...task, completed: !task.completed, completedAt: !task.completed ? newTimestamp : undefined } 
+            : task
+        )
+      };
+    });
   }, []);
 
   const handleToggleTaskExpansion = useCallback((tabId: TabId, taskId: string) => {
@@ -276,13 +305,13 @@ const App: React.FC = () => {
     setTasks(prevTasks => {
       const newState = { ...prevTasks };
       const tasksForTab = [...(newState[tabId] || [])];
-      if (parentListId === null) { // Reordering top-level tasks
+      if (parentListId === null) { 
         const itemToMove = tasksForTab.find(task => task.id === draggedTaskId);
         if (!itemToMove) return prevTasks;
         const listWithoutItem = tasksForTab.filter(task => task.id !== draggedTaskId);
         listWithoutItem.splice(newIndex, 0, itemToMove);
         newState[tabId] = listWithoutItem;
-      } else { // Reordering sub-tasks
+      } else { 
         const modifyParent = (tasksToSearch: Task[]): Task[] => tasksToSearch.map(task => {
           if (task.id === parentListId) {
             const currentSubTasks = [...(task.subTasks || [])];
@@ -301,7 +330,7 @@ const App: React.FC = () => {
       }
       return newState;
     });
-    // Reset sort to default when manual reorder occurs
+    
     const currentActiveTabFilters = perTabFilterSettings[tabId] || DEFAULT_FILTER_SETTINGS;
     if (applyFiltersGlobally) {
       setGlobalFilterSettings(prev => ({ ...prev, sortBy: 'default' }));
@@ -311,7 +340,7 @@ const App: React.FC = () => {
 
   }, [applyFiltersGlobally, perTabFilterSettings]);
 
-  // Template Functions
+  
   const handleSaveCurrentProjectAsTemplate = useCallback((templateName: string) => {
     if (!templateName.trim()) { alert("لطفاً نامی برای الگو وارد کنید."); return; }
     if (projectTemplates.some(t => t.name === templateName.trim())) { alert(`الگویی با نام "${templateName.trim()}" از قبل وجود دارد.`); return; }
@@ -346,7 +375,6 @@ const App: React.FC = () => {
     alert(`الگوی "${template.name}" حذف شد.`);
   }, [projectTemplates]);
 
-  // Filter change handler
   const handleFilterSettingsChange = useCallback((changedSettings: Partial<FilterSettings>) => {
     if (applyFiltersGlobally) {
       setGlobalFilterSettings(prev => ({ ...prev, ...changedSettings }));
@@ -361,14 +389,111 @@ const App: React.FC = () => {
   const toggleApplyFiltersGlobally = useCallback(() => {
     setApplyFiltersGlobally(prev => {
       const newGlobalStatus = !prev;
-      if (newGlobalStatus) { // Transitioning from per-tab to global
+      if (newGlobalStatus) { 
         setGlobalFilterSettings(perTabFilterSettings[activeTabId] || DEFAULT_FILTER_SETTINGS);
       }
-      // No specific action needed when transitioning from global to per-tab,
-      // as per-tab settings are preserved.
       return newGlobalStatus;
     });
   }, [activeTabId, perTabFilterSettings]);
+
+
+  type FlatTaskForCSV = {
+    category: string;
+    parentTaskId?: string;
+    parentTaskText?: string;
+    taskId: string;
+    taskText: string;
+    isSubTask: string; // "بله" / "خیر"
+    depth: number;
+    status: string; // "تکمیل شده" / "ناتمام"
+    priority: string; // "زیاد", "متوسط", "کم", "بدون اولویت"
+    dueDate?: string;
+    notes?: string;
+    completedAt?: string;
+  };
+
+  const flattenTasksForCSVRecursive = (
+    taskList: Task[], 
+    categoryLabel: string, 
+    depth: number, 
+    parentTask?: Task
+  ): FlatTaskForCSV[] => {
+    let flatList: FlatTaskForCSV[] = [];
+    taskList.forEach(task => {
+      flatList.push({
+        category: categoryLabel,
+        parentTaskId: parentTask?.id,
+        parentTaskText: parentTask?.text,
+        taskId: task.id,
+        taskText: task.text,
+        isSubTask: depth > 0 ? "بله" : "خیر",
+        depth: depth,
+        status: task.completed ? "تکمیل شده" : "ناتمام",
+        priority: task.priority === 'high' ? "زیاد" : task.priority === 'medium' ? "متوسط" : task.priority === 'low' ? "کم" : "بدون اولویت",
+        dueDate: task.dueDate || "",
+        notes: task.notes || "",
+        completedAt: task.completedAt || ""
+      });
+      if (task.subTasks && task.subTasks.length > 0) {
+        flatList = flatList.concat(flattenTasksForCSVRecursive(task.subTasks, categoryLabel, depth + 1, task));
+      }
+    });
+    return flatList;
+  };
+  
+  const handleExportTasksToCSV = useCallback(() => {
+    const allFlatTasks: FlatTaskForCSV[] = [];
+    APP_TAB_DEFINITIONS.forEach(tabDef => {
+      if (tabDef.id !== 'completed') { // Don't export tasks from the "completed" (reports) tab itself
+        const tasksForCategory = tasks[tabDef.id] || [];
+        allFlatTasks.push(...flattenTasksForCSVRecursive(tasksForCategory, tabDef.label, 0));
+      }
+    });
+
+    if (allFlatTasks.length === 0) {
+      alert("هیچ وظیفه‌ای برای خروجی گرفتن وجود ندارد.");
+      return;
+    }
+
+    const headers = [
+      "دسته بندی", "شناسه وظیفه والد", "متن وظیفه والد", 
+      "شناسه وظیفه", "متن وظیفه", "آیا زیرمجموعه است؟", "سطح تو در تو بودن",
+      "وضعیت", "اولویت", "تاریخ سررسید", "یادداشت ها", "تاریخ تکمیل"
+    ];
+    
+    const csvRows = [
+      headers.join(','),
+      ...allFlatTasks.map(row => [
+        `"${row.category.replace(/"/g, '""')}"`,
+        `"${(row.parentTaskId || "").replace(/"/g, '""')}"`,
+        `"${(row.parentTaskText || "").replace(/"/g, '""')}"`,
+        `"${row.taskId.replace(/"/g, '""')}"`,
+        `"${row.taskText.replace(/"/g, '""')}"`,
+        `"${row.isSubTask.replace(/"/g, '""')}"`,
+        row.depth,
+        `"${row.status.replace(/"/g, '""')}"`,
+        `"${row.priority.replace(/"/g, '""')}"`,
+        `"${(row.dueDate || "").replace(/"/g, '""')}"`,
+        `"${(row.notes || "").replace(/"/g, '""')}"`,
+        `"${(row.completedAt || "").replace(/"/g, '""')}"`
+      ].join(','))
+    ];
+    
+    const csvString = "\uFEFF" + csvRows.join('\n'); // Add BOM for Excel to recognize UTF-8
+    const blob = new Blob([csvString], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    if (link.download !== undefined) {
+      const url = URL.createObjectURL(blob);
+      link.setAttribute('href', url);
+      link.setAttribute('download', 'seo_tasks_export.csv');
+      link.style.visibility = 'hidden';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    }
+  }, [tasks]);
+
 
   const currentActiveFilterSettings = applyFiltersGlobally 
                                       ? globalFilterSettings 
@@ -423,10 +548,10 @@ const App: React.FC = () => {
       <main className="container mx-auto p-3 sm:p-5 flex-grow w-full max-w-4xl">
         {currentTabDefinition ? (
           <TaskCategoryDisplay
-            key={activeTabId + (applyFiltersGlobally ? '-global' : '-pertab')} // More robust key for re-mount
+            key={activeTabId + (applyFiltersGlobally ? '-global' : '-pertab')} 
             tabDefinition={currentTabDefinition}
             tasks={currentTasks}
-            allTasks={tasks} // For 'completed' tab's progress summary
+            allTasks={tasks} 
             currentFilterSettings={currentActiveFilterSettings}
             onFilterSettingsChange={handleFilterSettingsChange}
             onAddTask={(taskText) => handleAddTask(activeTabId, taskText)}
@@ -435,6 +560,7 @@ const App: React.FC = () => {
             onReorderTasksForTab={handleReorderTask}
             onAddSubTask={(parentId, taskText) => handleAddSubTask(activeTabId, parentId, taskText)}
             onToggleTaskExpansion={(taskId) => handleToggleTaskExpansion(activeTabId, taskId)}
+            onExportToCSV={handleExportTasksToCSV} // Pass the new export handler
           />
         ) : (
           <div className="text-center p-10 text-gray-600">محتوایی برای نمایش وجود ندارد. لطفا یک تب را انتخاب کنید.</div>

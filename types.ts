@@ -8,6 +8,7 @@ export interface Task {
   subTasks?: Task[]; // For sub-tasks
   parentId?: string; // ID of the parent task, if this is a sub-task
   isExpanded?: boolean; // To control UI expansion of sub-tasks
+  completedAt?: string; // ISO string for completion timestamp
 }
 
 export type TabId = 'start' | 'daily' | 'weekly' | 'monthly' | 'completed';
